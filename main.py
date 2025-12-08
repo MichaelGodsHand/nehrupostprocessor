@@ -325,7 +325,7 @@ JSON:"""
         
         # Insert into MongoDB
         client = get_mongodb_client()
-        db = client["VIT"]
+        db = client["NEHRU"]
         users_collection = db["users"]
         
         # Check if user already exists (shouldn't happen, but safety check)
@@ -568,7 +568,7 @@ async def process_conversation(request: ConversationRequest):
         
         # Check if user exists
         client = get_mongodb_client()
-        db = client["VIT"]
+        db = client["NEHRU"]
         users_collection = db["users"]
         analytics_collection = db["userAnalytics"]
         
