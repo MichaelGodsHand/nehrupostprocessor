@@ -20,7 +20,7 @@ load_dotenv()
 logger.add("postprocessor.log", rotation="10 MB", level="INFO")
 
 # FastAPI app
-app = FastAPI(title="VIT Postprocessor", version="1.0.0")
+app = FastAPI(title="Nehru Postprocessor", version="1.0.0")
 
 # Add CORS middleware
 app.add_middleware(
@@ -188,7 +188,7 @@ IMPORTANT:
 - Include ALL courses mentioned, not just one
 - If no scholarship-related course interests are found, return an empty array []
 - Course names can be in any format (full names, abbreviations, etc.) - extract them as mentioned
-- Common course names at VIT include: Computer Science and Engineering, Information Technology, Electronics and Communication Engineering, Electrical and Electronics Engineering, Mechanical Engineering, AIML, etc.
+- Common course names at Nehru College include: Computer Science and Engineering, Information Technology, Electronics and Communication Engineering, Electrical and Electronics Engineering, Mechanical Engineering, AIML, etc.
 
 Return the result as a JSON object with a "scholarships" field containing an array:
 {{"scholarships": ["computer science and engineering", "AIML"]}}
@@ -352,6 +352,10 @@ JSON:"""
 def format_budget_indian_style(budget_text: str) -> str:
     """Format budget in Indian number format (e.g., 1,90,000-2,00,000)"""
     try:
+        # Handle None or empty values
+        if not budget_text or not isinstance(budget_text, str):
+            return ""
+        
         # If already in correct format, return as is
         if "-" in budget_text and "," in budget_text and "lakh" not in budget_text.lower() and "per" not in budget_text.lower():
             return budget_text.strip()
@@ -501,13 +505,22 @@ JSON:"""
         follow_up = detect_follow_up(conversation)
         
         # Create analytics document
+        # Handle None values safely - get() returns None if key exists with None value
+        course_interest = analytics_data.get("course_interest") or ""
+        course_interest = course_interest.lower() if isinstance(course_interest, str) else ""
+        
+        city = analytics_data.get("city") or ""
+        
+        intent_level = analytics_data.get("intent_level") or "TOFU"
+        intent_level = intent_level.upper() if isinstance(intent_level, str) else "TOFU"
+        
         analytics_doc = {
             "user_id": user_id,
-            "course_interest": analytics_data.get("course_interest", "").lower(),
-            "city": analytics_data.get("city", ""),
+            "course_interest": course_interest,
+            "city": city,
             "budget": budget_formatted,
             "hostel_needed": bool(hostel_needed),
-            "intent_level": analytics_data.get("intent_level", "TOFU").upper(),
+            "intent_level": intent_level,
             "follow_up": follow_up
         }
         
