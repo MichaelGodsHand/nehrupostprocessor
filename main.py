@@ -280,12 +280,53 @@ Phone number:"""
         return None
 
 
-def create_user_from_conversation(conversation: str, phone_number: str) -> Optional[dict]:
+def extract_email(conversation: str) -> Optional[str]:
+    """Extract email address from conversation using OpenAI"""
+    try:
+        prompt = f"""Analyze the following conversation and extract the email address mentioned in it.
+The email address should be in standard format (e.g., user@example.com).
+Return ONLY the email address in lowercase.
+If no email address is found, return "NOT_FOUND".
+
+Conversation:
+{conversation}
+
+Email address:"""
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are an email extraction assistant. Extract email addresses from conversations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=100
+        )
+        
+        email = response.choices[0].message.content.strip()
+        
+        if email == "NOT_FOUND" or not email:
+            logger.warning("No email address found in conversation")
+            return None
+        
+        # Normalize email (lowercase, trim)
+        email = email.lower().strip()
+        
+        # Basic email validation
+        if "@" not in email or "." not in email.split("@")[1]:
+            logger.warning(f"Invalid email format extracted: {email}")
+            return None
+        
+        return email
+        
+    except Exception as e:
+        logger.error(f"Error extracting email: {e}")
+        return None
+
+
+def create_user_from_conversation(conversation: str, phone_number: Optional[str] = None, email: Optional[str] = None) -> Optional[dict]:
     """Create user record from conversation using OpenAI"""
     try:
-        # Convert to DB format: "91" + 10 digits
-        phone_db_format = f"91{phone_number}"
-        
         prompt = f"""Analyze the following conversation and extract the user's information.
 Extract the following information:
 1. Name: The person's full name
@@ -316,30 +357,50 @@ JSON:"""
         
         user_data = json.loads(response.choices[0].message.content)
         
+        # Use extracted email from function parameter if available, otherwise use extracted from conversation
+        extracted_email = email or user_data.get("email", "")
+        if extracted_email:
+            extracted_email = extracted_email.lower().strip()
+        
         # Create user document
         user_doc = {
             "name": user_data.get("name", ""),
-            "email": user_data.get("email", ""),
-            "phone_number": phone_db_format
+            "email": extracted_email
         }
+        
+        # Add phone number if available
+        if phone_number:
+            phone_db_format = f"91{phone_number}"
+            user_doc["phone_number"] = phone_db_format
         
         # Insert into MongoDB
         client = get_mongodb_client()
         db = client["NEHRU"]
         users_collection = db["users"]
         
-        # Check if user already exists (shouldn't happen, but safety check)
-        existing = users_collection.find_one({"phone_number": phone_db_format})
-        if existing:
-            logger.info(f"User already exists with phone: {phone_db_format}")
-            client.close()
-            return existing
+        # Check if user already exists by phone number (if provided)
+        if phone_number:
+            phone_db_format = f"91{phone_number}"
+            existing = users_collection.find_one({"phone_number": phone_db_format})
+            if existing:
+                logger.info(f"User already exists with phone: {phone_db_format}")
+                client.close()
+                return existing
+        
+        # Check if user already exists by email (if provided)
+        if extracted_email:
+            existing = users_collection.find_one({"email": extracted_email})
+            if existing:
+                logger.info(f"User already exists with email: {extracted_email}")
+                client.close()
+                return existing
         
         # Insert new user
         result = users_collection.insert_one(user_doc)
         user_doc["_id"] = result.inserted_id
         
-        logger.info(f"Created new user: {user_doc['name']} (phone: {phone_db_format})")
+        identifier = f"phone: {phone_db_format}" if phone_number else f"email: {extracted_email}"
+        logger.info(f"Created new user: {user_doc['name']} ({identifier})")
         client.close()
         
         return user_doc
@@ -557,14 +618,22 @@ async def process_conversation(request: ConversationRequest):
         
         logger.info("Starting conversation processing...")
         
-        # Phase 1: Extract phone number, detect languages, and check/create user
+        # Phase 1: Extract phone number or email, detect languages, and check/create user
         logger.info("Phase 1: Extracting phone number and detecting languages...")
         phone_number = extract_phone_number(conversation)
+        email = None
         
+        # If phone number is not found, try to extract email
         if not phone_number:
-            raise HTTPException(status_code=400, detail="Could not extract phone number from conversation")
-        
-        logger.info(f"Extracted phone number: {phone_number}")
+            logger.info("No phone number found, attempting to extract email...")
+            email = extract_email(conversation)
+            
+            if not email:
+                raise HTTPException(status_code=400, detail="Could not extract phone number or email from conversation")
+            
+            logger.info(f"Extracted email: {email}")
+        else:
+            logger.info(f"Extracted phone number: {phone_number}")
         
         # Detect languages used in the conversation
         logger.info("Phase 1: Detecting languages used in conversation...")
@@ -576,21 +645,28 @@ async def process_conversation(request: ConversationRequest):
         scholarships = detect_scholarship_interests(conversation)
         logger.info(f"Detected scholarship interests: {scholarships}")
         
-        # Convert to DB format
-        phone_db_format = f"91{phone_number}"
-        
         # Check if user exists
         client = get_mongodb_client()
         db = client["NEHRU"]
         users_collection = db["users"]
         analytics_collection = db["userAnalytics"]
         
-        user = users_collection.find_one({"phone_number": phone_db_format})
+        user = None
+        
+        # Try to find user by phone number first (if available)
+        if phone_number:
+            phone_db_format = f"91{phone_number}"
+            user = users_collection.find_one({"phone_number": phone_db_format})
+        
+        # If not found by phone, try to find by email (if available)
+        if not user and email:
+            email_normalized = email.lower().strip()
+            user = users_collection.find_one({"email": email_normalized})
         
         if not user:
             # User doesn't exist - create new user
             logger.info("User not found, creating new user...")
-            user = create_user_from_conversation(conversation, phone_number)
+            user = create_user_from_conversation(conversation, phone_number=phone_number, email=email)
             
             if not user:
                 client.close()
@@ -703,5 +779,5 @@ async def process_conversation(request: ConversationRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "8003"))
+    port = int(os.getenv("PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)
